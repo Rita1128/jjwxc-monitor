@@ -7,9 +7,11 @@ import random
 import os
 import re
 
-DATA_FILE = "data/records.csv"
-RANK_URL  = "https://www.jjwxc.net/topten.php?orderstr=12&t=0"
-HEADERS   = {
+DATA_FILE    = "data/records.csv"
+RANK_URL     = "https://www.jjwxc.net/topten.php?orderstr=12&t=0"
+SCRAPER_KEY  = "eeca1defaf74f4c7ce925161bae32f31"
+
+HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -20,10 +22,17 @@ HEADERS   = {
 }
 
 
+def scraper_get(url, session):
+    """通过 ScraperAPI 发请求"""
+    api_url = f"http://api.scraperapi.com?api_key={SCRAPER_KEY}&url={url}&country_code=cn"
+    resp = session.get(api_url, headers=HEADERS, timeout=60)
+    resp.encoding = "gb18030"
+    return resp
+
+
 def fetch_rank_list(session):
     print(f"正在请求榜单: {RANK_URL}")
-    resp = session.get(RANK_URL, headers=HEADERS, timeout=20)
-    resp.encoding = "gb18030"
+    resp = scraper_get(RANK_URL, session)
 
     if resp.status_code != 200:
         raise Exception(f"请求失败，状态码: {resp.status_code}")
@@ -66,8 +75,7 @@ def fetch_rank_list(session):
 
 def fetch_book_collection(book_id, session):
     url  = f"https://www.jjwxc.net/onebook.php?novelid={book_id}"
-    resp = session.get(url, headers=HEADERS, timeout=15)
-    resp.encoding = "gb18030"
+    resp = scraper_get(url, session)
 
     if resp.status_code != 200:
         return None
@@ -206,7 +214,7 @@ def main():
         else:
             print("⚠️  获取失败，跳过")
 
-        time.sleep(random.uniform(2, 5))
+        time.sleep(random.uniform(1, 3))
 
     if not today_rows:
         print("❌ 所有书籍收藏数获取失败")
