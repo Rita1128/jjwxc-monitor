@@ -6,7 +6,7 @@ import datetime, time, random, os, re
 DATA_FILE   = "data/records.csv"
 SCRAPER_KEY = "eeca1defaf74f4c7ce925161bae32f31"
 
-BOOK_IDS = ["9652162","9456285","9852102","8943151","10269620"]
+BOOK_IDS = ["10304559","9773492","9121068","9628524","7328988"]
 
 def scraper_get(url):
     api = f"http://api.scraperapi.com?api_key={SCRAPER_KEY}&url={url}&render=true&country_code=cn"
