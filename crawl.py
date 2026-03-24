@@ -23,10 +23,14 @@ HEADERS = {
 
 
 def scraper_get(url, session):
-    """通过 ScraperAPI 发请求"""
-    api_url = f"http://api.scraperapi.com?api_key={SCRAPER_KEY}&url={url}&country_code=cn"
-    resp = session.get(api_url, headers=HEADERS, timeout=60)
-    resp.encoding = "gb18030"
+    api_url = (
+        f"http://api.scraperapi.com"
+        f"?api_key={SCRAPER_KEY}"
+        f"&url={url}"
+        f"&country_code=cn"
+        f"&render=true"
+    )
+    resp = session.get(api_url, timeout=120)
     return resp
 
 
@@ -34,12 +38,30 @@ def fetch_rank_list(session):
     print(f"正在请求榜单: {RANK_URL}")
     resp = scraper_get(RANK_URL, session)
 
-    if resp.status_code != 200:
-        raise Exception(f"请求失败，状态码: {resp.status_code}")
+    print(f"响应状态码: {resp.status_code}")
+    print(f"响应长度: {len(resp.text)} 字符")
 
-    soup  = BeautifulSoup(resp.text, "lxml")
+    # 尝试多种编码
+    for encoding in ["gb18030", "gbk", "gb2312", "utf-8"]:
+        try:
+            text = resp.content.decode(encoding)
+            print(f"使用编码: {encoding} 成功")
+            break
+        except:
+            continue
+    else:
+        text = resp.text
+        print("使用默认编码")
+
+    # 保存调试信息
+    print(f"页面前500字符: {text[:500]}")
+
+    soup  = BeautifulSoup(text, "lxml")
     books = []
-    rows  = soup.find_all("tr")
+
+    # 方法1: 找所有tr
+    rows = soup.find_all("tr")
+    print(f"找到 {len(rows)} 个 tr 标签")
 
     for row in rows:
         cells = row.find_all("td")
@@ -53,13 +75,27 @@ def fetch_rank_list(session):
 
         author    = cells[1].get_text(strip=True)
         book_cell = cells[2]
-        link      = book_cell.find("a", href=re.compile(r"novelid=\d+"))
+
+        # 尝试多种链接匹配方式
+        link = book_cell.find("a", href=re.compile(r"novelid=\d+"))
         if not link:
+            link = book_cell.find("a", href=re.compile(r"onebook"))
+        if not link:
+            link = book_cell.find("a")
+
+        if not link:
+            print(f"  排名{rank}: 找不到链接, cell内容: {book_cell}")
             continue
 
         book_name = link.get_text(strip=True)
-        match     = re.search(r"novelid=(\d+)", link["href"])
+        href = link.get("href", "")
+        match = re.search(r"novelid=(\d+)", href)
+
+        if not match:
+            match = re.search(r"(\d+)", href)
+
         if not match or not book_name:
+            print(f"  排名{rank}: 无法提取ID, href={href}, name={book_name}")
             continue
 
         books.append({
@@ -68,8 +104,18 @@ def fetch_rank_list(session):
             "book_name": book_name,
             "author":    author,
         })
+        print(f"  ✅ #{rank} {book_name} / {author} (ID: {match.group(1)})")
 
-    print(f"榜单解析完成，共找到 {len(books)} 本书")
+    print(f"\n榜单解析完成，共找到 {len(books)} 本书")
+
+    # 方法2: 如果方法1失败，尝试直接找所有链接
+    if not books:
+        print("\n尝试备用解析方法...")
+        all_links = soup.find_all("a", href=re.compile(r"novelid=\d+"))
+        print(f"找到 {len(all_links)} 个含novelid的链接")
+        for link in all_links[:5]:
+            print(f"  链接: {link.get('href')} / 文字: {link.get_text(strip=True)}")
+
     return books
 
 
@@ -80,16 +126,27 @@ def fetch_book_collection(book_id, session):
     if resp.status_code != 200:
         return None
 
-    soup     = BeautifulSoup(resp.text, "lxml")
-    text     = soup.get_text()
+    for encoding in ["gb18030", "gbk", "gb2312", "utf-8"]:
+        try:
+            text = resp.content.decode(encoding)
+            break
+        except:
+            continue
+    else:
+        text = resp.text
+
+    soup = BeautifulSoup(text, "lxml")
+    full_text = soup.get_text()
+
     patterns = [
         r"收藏[：:]\s*([\d,]+)",
         r"收藏本书[（(]([\d,]+)[）)]",
         r"被收藏\s*([\d,]+)\s*次",
         r"收藏数[：:]\s*([\d,]+)",
+        r"总书评.*?收藏.*?([\d,]+)",
     ]
     for pat in patterns:
-        m = re.search(pat, text)
+        m = re.search(pat, full_text)
         if m:
             return int(m.group(1).replace(",", ""))
 
@@ -186,10 +243,12 @@ def main():
         books = fetch_rank_list(session)
     except Exception as e:
         print(f"❌ 获取榜单失败: {e}")
+        import traceback
+        traceback.print_exc()
         return
 
     if not books:
-        print("❌ 榜单解析为空")
+        print("❌ 榜单解析为空，退出")
         return
 
     print(f"\n榜单预览（前5名）:")
