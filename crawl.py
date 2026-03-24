@@ -3,72 +3,33 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import datetime, time, random, os, re
 
-DATA_FILE  = "data/records.csv"
-RANK_URL   = "https://www.jjwxc.net/topten.php?orderstr=12&t=0"
+DATA_FILE   = "data/records.csv"
 SCRAPER_KEY = "eeca1defaf74f4c7ce925161bae32f31"
+
+# ===== 在这里添加/删除你想监控的书籍ID =====
+BOOK_IDS = [
+    "9652162",
+    "9456285",
+    "9852102",
+    "8943151",
+    "10269620",
+]
 
 def scraper_get(url):
     api = f"http://api.scraperapi.com?api_key={SCRAPER_KEY}&url={url}&render=true&country_code=cn"
     r = requests.get(api, timeout=120)
     return r
 
-def fetch_rank_list():
-    print(f"正在请求榜单: {RANK_URL}")
-    resp = scraper_get(RANK_URL)
-    print(f"状态码: {resp.status_code}, 长度: {len(resp.text)}")
-
-    for enc in ["gb18030", "gbk", "utf-8"]:
-        try:
-            text = resp.content.decode(enc)
-            print(f"编码: {enc}")
-            break
-        except:
-            continue
-    else:
-        text = resp.text
-
-    print(f"页面前300字: {text[:300]}")
-
-    soup = BeautifulSoup(text, "lxml")
-    rows = soup.find_all("tr")
-    print(f"找到 {len(rows)} 个tr")
-
-    books = []
-    for row in rows:
-        cells = row.find_all("td")
-        if len(cells) < 3:
-            continue
-        rank_text = cells[0].get_text(strip=True)
-        if not rank_text.isdigit():
-            continue
-        rank = int(rank_text)
-        author = cells[1].get_text(strip=True)
-        link = cells[2].find("a", href=re.compile(r"novelid=\d+"))
-        if not link:
-            link = cells[2].find("a")
-        if not link:
-            continue
-        book_name = link.get_text(strip=True)
-        m = re.search(r"novelid=(\d+)", link.get("href",""))
-        if not m or not book_name:
-            continue
-        books.append({"rank": rank, "book_id": m.group(1), "book_name": book_name, "author": author})
-        print(f"  ✅ #{rank} {book_name} / {author}")
-
-    if not books:
-        all_links = soup.find_all("a", href=re.compile(r"novelid=\d+"))
-        print(f"备用: 找到 {len(all_links)} 个novelid链接")
-        for a in all_links[:10]:
-            print(f"  {a.get('href')} -> {a.get_text(strip=True)}")
-
-    print(f"共找到 {len(books)} 本书")
-    return books
-
-def fetch_collection(book_id):
+def fetch_book_info(book_id):
     url = f"https://www.jjwxc.net/onebook.php?novelid={book_id}"
+    print(f"  请求: {url}")
     resp = scraper_get(url)
+    print(f"  状态码: {resp.status_code}, 长度: {len(resp.text)}")
+
     if resp.status_code != 200:
+        print(f"  ❌ 请求失败")
         return None
+
     for enc in ["gb18030", "gbk", "utf-8"]:
         try:
             text = resp.content.decode(enc)
@@ -77,47 +38,102 @@ def fetch_collection(book_id):
             continue
     else:
         text = resp.text
+
     soup = BeautifulSoup(text, "lxml")
-    full = soup.get_text()
-    for pat in [r"收藏[：:]\s*([\d,]+)", r"收藏数[：:]\s*([\d,]+)", r"被收藏\s*([\d,]+)"]:
-        m = re.search(pat, full)
+
+    # 获取书名
+    title_tag = soup.find("span", itemprop="articleSection")
+    if not title_tag:
+        title_tag = soup.find("h1")
+    book_name = title_tag.get_text(strip=True) if title_tag else f"未知({book_id})"
+
+    # 获取作者
+    author_tag = soup.find("span", itemprop="author")
+    if not author_tag:
+        author_tag = soup.find("a", href=re.compile(r"oneauthor"))
+    author = author_tag.get_text(strip=True) if author_tag else "未知"
+
+    # 获取收藏数
+    full_text = soup.get_text()
+    collection = None
+    for pat in [r"收藏[：:]\s*([\d,]+)", r"收藏数[：:]\s*([\d,]+)",
+                r"被收藏\s*([\d,]+)", r"总收藏.*?([\d,]+)"]:
+        m = re.search(pat, full_text)
         if m:
-            return int(m.group(1).replace(",",""))
-    return None
+            collection = int(m.group(1).replace(",", ""))
+            break
+
+    if collection is None:
+        for tag in soup.find_all(["span", "td", "div"]):
+            t = tag.get_text(strip=True)
+            if "收藏" in t and len(t) < 30:
+                nums = re.findall(r"\d+", t)
+                if nums:
+                    collection = int(nums[0])
+                    break
+
+    print(f"  📖 {book_name} / {author} / 收藏: {collection}")
+    print(f"  页面前200字: {full_text[:200]}")
+    return {
+        "book_id": book_id,
+        "book_name": book_name,
+        "author": author,
+        "collection_count": collection,
+    }
 
 def main():
     print(f"\n🚀 开始: {datetime.datetime.now()}")
     os.makedirs("data", exist_ok=True)
+    today = datetime.date.today().isoformat()
 
     if os.path.exists(DATA_FILE):
         df_hist = pd.read_csv(DATA_FILE, dtype={"book_id": str})
+        print(f"已有 {len(df_hist)} 条历史记录")
     else:
         df_hist = pd.DataFrame()
-
-    today = datetime.date.today().isoformat()
-
-    books = fetch_rank_list()
-    if not books:
-        print("❌ 没有数据"); return
+        print("无历史数据，创建新文件")
 
     rows = []
-    for i, b in enumerate(books):
-        print(f"[{i+1}/{len(books)}] {b['book_name']}...", end=" ", flush=True)
-        c = fetch_collection(b["book_id"])
-        if c:
-            print(f"收藏:{c:,}")
-            rows.append({**b, "date": today, "collection_count": c, "daily_growth": 0, "growth_rate_pct": 0.0})
+    for i, bid in enumerate(BOOK_IDS):
+        print(f"\n[{i+1}/{len(BOOK_IDS)}] 书籍ID: {bid}")
+        info = fetch_book_info(bid)
+        if info and info["collection_count"] is not None:
+            # 计算日增长
+            growth = 0
+            if not df_hist.empty:
+                yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+                prev = df_hist[(df_hist["book_id"] == bid) & (df_hist["date"] == yesterday)]
+                if not prev.empty:
+                    growth = info["collection_count"] - int(prev.iloc[0]["collection_count"])
+
+            rows.append({
+                "date": today,
+                "book_id": bid,
+                "book_name": info["book_name"],
+                "author": info["author"],
+                "collection_count": info["collection_count"],
+                "daily_growth": growth,
+            })
         else:
-            print("跳过")
-        time.sleep(random.uniform(1,3))
+            print(f"  ⚠️ 跳过")
+        time.sleep(random.uniform(2, 5))
 
     if not rows:
-        print("❌ 全部失败"); return
+        print("\n❌ 全部获取失败")
+        return
 
     df_new = pd.DataFrame(rows)
     df_all = pd.concat([df_hist, df_new], ignore_index=True)
     df_all.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
-    print(f"✅ 保存 {len(df_new)} 条到 {DATA_FILE}")
+
+    print(f"\n{'='*60}")
+    print(f"  📊 收藏日报 {today}")
+    print(f"{'='*60}")
+    for _, r in df_new.iterrows():
+        g = f"+{r['daily_growth']}" if r['daily_growth'] >= 0 else str(r['daily_growth'])
+        print(f"  {r['book_name']} / {r['author']} | 收藏: {r['collection_count']:,} | 日增: {g}")
+    print(f"{'='*60}")
+    print(f"\n✅ 保存 {len(rows)} 条到 {DATA_FILE}")
 
 if __name__ == "__main__":
     main()
